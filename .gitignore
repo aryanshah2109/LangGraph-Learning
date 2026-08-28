@@ -1,2 +1,13 @@
 .env
 venv
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+*.accdb
+*.sql
+*.rdb
+__pycache__/
+
+Mini Projects/Chatbot With DB/chatbot.db-wal
+Mini Projects/Chatbot With DB/chatbot.db-shm
