@@ -7,6 +7,8 @@ venv
 *.accdb
 *.sql
 *.rdb
+*.pdf
+.indices/
 __pycache__/
 
 Mini Projects/Chatbot With DB/chatbot.db-wal

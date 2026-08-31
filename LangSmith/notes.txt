@@ -1,0 +1,10 @@
+What does it trace?
+    1. Input and output
+    2. All intermediate steps
+    3. Latency
+    4. Token usage
+    5. Costs
+    6. Error
+    7. Tags
+    8. Metadata
+    9. Feedback 
