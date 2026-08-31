@@ -8,8 +8,7 @@ venv
 *.sql
 *.rdb
 *.pdf
+*.db-wal
+*.db-shm
 .indices/
 __pycache__/
-
-Mini Projects/Chatbot With DB/chatbot.db-wal
-Mini Projects/Chatbot With DB/chatbot.db-shm
