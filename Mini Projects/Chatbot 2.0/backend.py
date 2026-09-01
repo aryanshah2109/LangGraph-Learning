@@ -7,6 +7,11 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 from typing import TypedDict, Literal, Annotated, List
 
+import requests
+from langchain_community.tools import DuckDuckGoSearchResults
+from langchain_core.tools import tool
+from langgraph.prebuilt import tools_condition, ToolNode
+
 import sqlite3
 import operator
 
@@ -21,20 +26,45 @@ llm = ChatGroq(
     reasoning_effort="low"
 )
 
-class EvalStructuredOutput(BaseModel):
-    score: float = Field(description="Score of the answer based on given parameter", ge=0, le=10)
-    justification: str = Field(description="Justification behind the score")
+# Tools
+search_tool = DuckDuckGoSearchResults()
 
-eval_llm = llm.with_structured_output(EvalStructuredOutput, method="json_schema")
+@tool
+def calculator(first_number: float, second_number: float, operator: str) -> dict:
+    """
+    Performs a basic mathematical operation on 2 numbers based on the operator selected
+    """
+    match operator:
+        case "+":
+            result = first_number + second_number
+        case "-":
+            result = first_number - second_number
+        case "*":
+            result = first_number * second_number
+        case "/":
+            if second_number != 0:
+                result = first_number + second_number
+            else:
+                return {"error": "Division by 0 not possible"}
+        
+    return {"first_number": first_number, "second_number": second_number, "operator": operator, "result": result}
+
+
+@tool
+def get_stock_price(symbol: str) -> dict:
+    """
+    Fetches latest stock price for a particular symbol (eg: 'AAPL', 'TSLA') by API calling
+    """
+    url = f'https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey=7TMC9BD1R1R6EL0L'
+    r = requests.get(url)
+    return r.json()
+
+tool_list = [search_tool, calculator, get_stock_price]
+llm_with_tools = llm.bind_tools(tool_list)
 
 # State
 class ChatbotState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
-    correctness: str
-    language: str
-    relevance: str
-    scores: Annotated[List[float], operator.add]
-    summary: str
     
 
 def chatbot_qa(state: ChatbotState) -> dict:
@@ -44,88 +74,20 @@ def chatbot_qa(state: ChatbotState) -> dict:
     prompt = f"""
     Answer the last human question asked in the messages: {messages}. Ensure well structured and sufficiently detailed answer. 
     """
-    response = llm.invoke(prompt)
+    response = llm_with_tools.invoke(prompt)
     return {"messages": [response]}
 
-def judge_correctness(state: ChatbotState) -> dict:
-
-    messages = state["messages"]
-    prompt = f"""
-    Provide a numerical score between 1-10 and a short justification for the following conversation based on correctness.
-    Judge any concepts/facts/figures/statements 
-    Ensure you only judge last AI and Human conversation:
-    {messages}.
-    Return the response in JSON format with exactly these fields: `score` and `justification`
-    """
-
-    response = eval_llm.invoke(prompt)
-    return {"scores": [response.score], "correctness": response.justification}    
-
-def judge_language(state: ChatbotState) -> dict:
-
-    messages = state["messages"]
-    prompt = f"""
-    Provide a numerical score between 1-10 and a short justification for the following conversation based on language.
-    Judge on the basis of language, grammer, etc.
-    Ensure you only judge last AI and Human conversation:
-    {messages}.
-    Return the response in JSON format with exactly these fields: `score` and `justification`
-    """
-
-    response = eval_llm.invoke(prompt)
-    return {"scores": [response.score], "language": response.justification}  
-
-def judge_relevance(state: ChatbotState) -> dict:
-
-    messages = state["messages"]
-    prompt = f"""
-    Provide a numerical score between 1-10 and a short justification for the following conversation based on relevance.
-    Judge any whether answer is relevant to the question or not.
-    Ensure you only judge last AI and Human conversation:
-    {messages}.
-    Return the response in JSON format with exactly these fields: `score` and `justification`
-    """
-
-    response = eval_llm.invoke(prompt)
-    return {"scores": [response.score], "relevance": response.justification}  
-
-def final_eval(state: ChatbotState) -> dict:
-
-    messages = state["messages"]
-
-    prompt = f"""
-    Give a final summary of the evaluation based on scores and justifications. Ensure you only check last AI and Human messages
-
-    Messages: 
-    {messages}.
-
-    Justifications:
-    Correctness: {state['correctness']} 
-    Language: {state['language']}
-    Relevance: {state['relevance']}
-    Scores: {state['scores']}
-    """
-
-    response = llm.invoke(prompt)
-    return {"summary": response.content}
-
-
+tool_node = ToolNode(tools=tool_list)
 
 graph = StateGraph(ChatbotState)
 graph.add_node("chatbot_qa", chatbot_qa)
-graph.add_node("judge_correctness", judge_correctness)
-graph.add_node("judge_language", judge_language)
-graph.add_node("judge_relevance", judge_relevance)
-graph.add_node("final_eval", final_eval)
+
+graph.add_node("tools", tool_node)
 
 graph.add_edge(START, "chatbot_qa")
+graph.add_conditional_edges("chatbot_qa", tools_condition)
+graph.add_edge("tools", "chatbot_qa")
 
-graph.add_edge("chatbot_qa", "judge_correctness")
-graph.add_edge("judge_correctness", "judge_language")
-graph.add_edge("judge_language", "judge_relevance")
-graph.add_edge("judge_relevance", "final_eval")
-
-graph.add_edge("final_eval", END)
 
 conn = sqlite3.connect(
     database="Mini Projects/Chatbot 2.0/chatbot.db",
@@ -136,22 +98,29 @@ checkpointer = SqliteSaver(conn=conn)
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
-CONFIG = {
-    "configurable": {
-        "thread_id": "thread_1"
-    }
-}
+def retrieve_all_threads():
+    thread_set = set()
+    for checkpoint in checkpointer.list(None):
+        thread_set.add(checkpoint.config["configurable"]["thread_id"])
+    return list(thread_set)
 
-input_state = {
-    "messages": [
-        HumanMessage("Explain XGBoost algorithm in Machine Learning.")
-    ]
-}
 
-output_state = chatbot.invoke(input_state, config=CONFIG)
-# print(output_state)
+# CONFIG = {
+#     "configurable": {
+#         "thread_id": "thread_1"
+#     }
+# }
 
-for key, val in output_state.items():
-    print("")
-    print(key)
-    print(val)
+# input_state = {
+#     "messages": [
+#         HumanMessage("Explain XGBoost algorithm in Machine Learning.")
+#     ]
+# }
+
+# output_state = chatbot.invoke(input_state, config=CONFIG)
+# # print(output_state)
+
+# for key, val in output_state.items():
+#     print("")
+#     print(key)
+#     print(val)
